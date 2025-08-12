@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/your-app
+  IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/unisecure-trivy
   TRIVY_SEVERITY: 'CRITICAL,HIGH'
   NODE_VERSION: '18'
   TRIVY_VERSION: '0.65.0'
@@ -168,6 +168,6 @@ jobs:
       - name: Deploy to production
         run: |
           kubectl apply -f k8s/deployment.yaml
-          kubectl rollout status deployment/your-app
+          kubectl rollout status deployment/unisecure-trivy
         env:
           KUBECONFIG: ${{ secrets.KUBE_CONFIG }}
