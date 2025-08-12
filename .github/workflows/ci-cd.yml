@@ -10,6 +10,7 @@ env:
   IMAGE_NAME: ${{ secrets.DOCKER_HUB_USERNAME }}/your-app
   TRIVY_SEVERITY: 'CRITICAL,HIGH'
   NODE_VERSION: '18'
+  TRIVY_VERSION: '0.65.0'  # Pinned version
 
 jobs:
   security-scan:
@@ -17,20 +18,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Run Trivy on base image
-        uses: aquasecurity/trivy-action@master
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@v1
         with:
-          image-ref: 'node:${{ env.NODE_VERSION }}-alpine'
-          format: 'sarif'
-          exit-code: '1'
-          severity: ${{ env.TRIVY_SEVERITY }}
-          ignore-unfixed: true
-          output: 'trivy-results.json'
+          version: ${{ env.TRIVY_VERSION }}
+          skip-version-check: true
+      
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: ${{ runner.os }}-trivy-db-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-trivy-db-
+      
+      - name: Scan base image
+        run: |
+          trivy image --cache-dir ~/.cache/trivy \
+            --severity ${{ env.TRIVY_SEVERITY }} \
+            --ignore-unfixed \
+            --skip-version-check \
+            --exit-code 1 \
+            --format sarif \
+            --output trivy-results.json \
+            node:${{ env.NODE_VERSION }}-alpine
           
+          echo "TRIVY_EXIT_CODE=$?" >> $GITHUB_ENV
+      
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: 'trivy-results.json'
+          sarif_file: trivy-results.json
+        if: always()
+
+      - name: Fail if vulnerabilities found
+        if: env.TRIVY_EXIT_CODE != '0'
+        run: exit 1
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -44,7 +67,9 @@ jobs:
           cache: 'npm'
       
       - name: Audit npm dependencies
-        run: npm audit --audit-level=high
+        run: |
+          npm ci --omit=dev
+          npm audit --audit-level=high --production
         continue-on-error: false
 
   build-test:
@@ -69,18 +94,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Setup Trivy
+        uses: aquasecurity/setup-trivy@v1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+          skip-version-check: true
+      
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: ${{ runner.os }}-trivy-db-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-trivy-db-
+      
       - name: Build Docker image
         run: docker build -t ${{ env.IMAGE_NAME }} .
         
-      - name: Scan built image with Trivy
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.IMAGE_NAME }}
-          format: 'table'
-          exit-code: '1'
-          severity: ${{ env.TRIVY_SEVERITY }}
-          ignore-unfixed: true
-          vuln-type: 'os,library'
+      - name: Scan built image
+        run: |
+          trivy image --cache-dir ~/.cache/trivy \
+            --severity ${{ env.TRIVY_SEVERITY }} \
+            --ignore-unfixed \
+            --skip-version-check \
+            --exit-code 1 \
+            --format table \
+            --vuln-type os,library \
+            ${{ env.IMAGE_NAME }}
+          
+          echo "TRIVY_EXIT_CODE=$?" >> $GITHUB_ENV
+      
+      - name: Fail if vulnerabilities found
+        if: env.TRIVY_EXIT_CODE != '0'
+        run: exit 1
 
   docker-push:
     needs: docker-scan
@@ -105,9 +151,11 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           sbom: true
+          provenance: true  # Enable SLSA provenance
 
   deploy:
     needs: docker-push
@@ -115,7 +163,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Verify deployment environment
-        run: kubectl version --client
+        run: |
+          kubectl version --client
+          kubectl cluster-info
         env:
           KUBECONFIG: ${{ secrets.KUBE_CONFIG }}
           
@@ -123,3 +173,5 @@ jobs:
         run: |
           kubectl apply -f k8s/deployment.yaml
           kubectl rollout status deployment/your-app
+        env:
+          KUBECONFIG: ${{ secrets.KUBE_CONFIG }}
