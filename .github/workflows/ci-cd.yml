@@ -33,6 +33,7 @@ jobs:
             ${{ runner.os }}-trivy-db-
       
       - name: Scan base image
+        id: scan-base
         run: |
           trivy image --cache-dir ~/.cache/trivy \
             --severity ${{ env.TRIVY_SEVERITY }} \
@@ -41,9 +42,7 @@ jobs:
             --exit-code 1 \
             --format sarif \
             --output trivy-results.json \
-            node:${{ env.NODE_VERSION }}-alpine
-          
-          echo "TRIVY_EXIT_CODE=$?" >> $GITHUB_ENV
+            node:${{ env.NODE_VERSION }}-alpine || echo "vulnerabilities found"
       
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
@@ -52,8 +51,13 @@ jobs:
         if: always()
 
       - name: Fail if vulnerabilities found
-        if: env.TRIVY_EXIT_CODE != '0'
-        run: exit 1
+        run: |
+          trivy image --cache-dir ~/.cache/trivy \
+            --severity ${{ env.TRIVY_SEVERITY }} \
+            --ignore-unfixed \
+            --skip-version-check \
+            --exit-code 1 \
+            node:${{ env.NODE_VERSION }}-alpine
 
   dependency-audit:
     runs-on: ubuntu-latest
@@ -70,7 +74,6 @@ jobs:
         run: |
           npm ci --omit=dev
           npm audit --audit-level=high --production
-        continue-on-error: false
 
   build-test:
     needs: [security-scan, dependency-audit]
@@ -120,13 +123,16 @@ jobs:
             --exit-code 1 \
             --format table \
             --vuln-type os,library \
-            ${{ env.IMAGE_NAME }}
-          
-          echo "TRIVY_EXIT_CODE=$?" >> $GITHUB_ENV
+            ${{ env.IMAGE_NAME }} || echo "vulnerabilities found"
       
       - name: Fail if vulnerabilities found
-        if: env.TRIVY_EXIT_CODE != '0'
-        run: exit 1
+        run: |
+          trivy image --cache-dir ~/.cache/trivy \
+            --severity ${{ env.TRIVY_SEVERITY }} \
+            --ignore-unfixed \
+            --skip-version-check \
+            --exit-code 1 \
+            ${{ env.IMAGE_NAME }}
 
   docker-push:
     needs: docker-scan
